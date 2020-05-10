@@ -1,5 +1,7 @@
 // https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
 
+use std::collections::VecDeque;
+
 #[derive(Clone, Copy, Default)]
 struct Vec3(f64, f64, f64);
 
@@ -215,20 +217,59 @@ fn closest_intersection(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
         -> Option<(&'static Sphere, f64)> {
     let mut closest_t = f64::INFINITY;
     let mut closest_sphere = None;
-    for sphere in &SPHERES {
-        let (t1, t2) = intersect_ray_sphere(origin, ray_dir, sphere);
-        if t1 < closest_t && (t_min..t_max).contains(&t1) {
-            closest_t = t1;
-            closest_sphere = Some(sphere);
-        }
-        if t2 < closest_t && (t_min..t_max).contains(&t2) {
-            closest_t = t2;
+    for (sphere, t) in intersected_spheres(origin, ray_dir, t_min, t_max) {
+        if t < closest_t {
+            closest_t = t;
             closest_sphere = Some(sphere);
         }
     }
     match closest_sphere {
         None => None,
         Some(sphere) => Some((sphere, closest_t)),
+    }
+}
+
+struct SpheresIterator {
+    // Inputs
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    t_range: std::ops::Range<f64>,
+
+    // State
+    sphere_index: isize,
+    ts: VecDeque<f64>,
+}
+
+impl Iterator for SpheresIterator {
+    type Item = (&'static Sphere, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.ts.is_empty() {
+            self.sphere_index += 1;
+            if self.sphere_index as usize >= SPHERES.len() {
+                return None;
+            }
+            let (t1, t2) = intersect_ray_sphere(self.ray_origin, self.ray_dir,
+                &SPHERES[self.sphere_index as usize]);
+            if self.t_range.contains(&t1) {
+                self.ts.push_back(t1);
+            }
+            if self.t_range.contains(&t2) {
+                self.ts.push_back(t2);
+            }
+        }
+        Some((&SPHERES[self.sphere_index as usize], self.ts.pop_front().unwrap()))
+    }
+}
+
+fn intersected_spheres(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
+        -> impl Iterator<Item=(&'static Sphere, f64)> {
+    SpheresIterator{
+        ray_origin: origin,
+        ray_dir: ray_dir,
+        t_range: t_min..t_max,
+        sphere_index: -1,
+        ts: VecDeque::new(),
     }
 }
 
@@ -273,11 +314,7 @@ fn compute_lighting(point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec
 // Returns: RGB colour
 fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, light_dist: f64,
                      specular: f64) -> Vec3 {
-    // Shadow check
-    if closest_intersection(point, light_dir, EPSILON, light_dist).is_some() {
-        // TODO take into account transparency
-        return Vec3::default();
-    }
+    let base = ray_colour(point, light_dir, EPSILON, light_dist);
 
     let mut intensity = 0.;
 
@@ -299,7 +336,17 @@ fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, lig
         }
     }
 
-    intensity * Vec3(1., 1., 1.)
+    intensity * base
+}
+
+// Returns: RGB colour
+fn ray_colour(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
+    let mut colour = Vec3(1., 1., 1.);
+    for (sphere, _) in intersected_spheres(origin, ray_dir, t_min, t_max) {
+        colour = colour.pointwise_mul(sphere.transparent * sphere.colour);
+        // colour = sphere.transparent * colour
+    }
+    colour
 }
 
 fn reflect_ray(ray: Vec3, normal: Vec3) -> Vec3 {

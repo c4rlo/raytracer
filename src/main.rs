@@ -59,34 +59,19 @@ const VIEWPORT_WIDTH: f64 = 1.;
 const VIEWPORT_HEIGHT: f64 = CANVAS_HEIGHT_F64 * VIEWPORT_WIDTH / CANVAS_WIDTH_F64;
 const VIEWPORT_DISTANCE: f64 = 1.;
 
-type Colour = image::Rgb<u8>;
+const REFLECT_RECURSION: u32 = 5;
 
-fn colour_channel_mul(f: f64, c: u8) -> u8 {
-    let raw = f * (c as f64);
-    if raw < 0. {
-        0u8
-    } else if raw >= 256. {
-        255u8
-    } else {
-        raw as u8
-    }
-}
+const EPSILON: f64 = 0.000000001;
 
-fn colour_mul(f: f64, c: image::Rgb<u8>) -> image::Rgb<u8> {
-    image::Rgb::<u8>([
-        colour_channel_mul(f, c[0]),
-        colour_channel_mul(f, c[1]),
-        colour_channel_mul(f, c[2]),
-    ])
-}
-
-const BGCOLOUR: Colour = image::Rgb([255u8, 255u8, 255u8]);
+const BGCOLOUR: image::Rgb<u8> = image::Rgb([0u8, 0u8, 0u8]);
+// const BGCOLOUR: image::Rgb<u8> = image::Rgb([255u8, 255u8, 255u8]);
 
 struct Sphere {
     centre: Vec3,
     radius: f64,
-    colour: Colour,
+    colour: image::Rgb<u8>,
     specular: f64,
+    reflective: f64,
 }
 
 const SPHERES: [Sphere; 4] = [
@@ -95,24 +80,28 @@ const SPHERES: [Sphere; 4] = [
         radius: 1.,
         colour: image::Rgb([255u8, 0u8, 0u8]),
         specular: 500.,
+        reflective: 0.2,
     },
     Sphere{
         centre: Vec3(2., 0., 4.),
         radius: 1.,
         colour: image::Rgb([0u8, 0u8, 255u8]),
         specular: 500.,
+        reflective: 0.3,
     },
     Sphere{
         centre: Vec3(-2., 0., 4.),
         radius: 1.,
         colour: image::Rgb([0u8, 255u8, 0u8]),
         specular: 10.,
+        reflective: 0.4,
     },
     Sphere{
         centre: Vec3(0., -5001., 0.),
         radius: 5000.,
         colour: image::Rgb([255u8, 255u8, 0u8]),
         specular: 1000.,
+        reflective: 0.5,
     },
 ];
 
@@ -142,34 +131,48 @@ const LIGHTS: [Light; 3] = [
     },
 ];
 
-fn trace_ray(camera: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64) -> Colour {
+fn trace_ray(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64, recursion: u32) -> image::Rgb<u8> {
+    match closest_intersection(origin, ray_dir, t_min, t_max) {
+        None => BGCOLOUR,
+        Some((sphere, t)) => {
+            let intersection = origin + &(t * ray_dir);
+            let normal = (&intersection - &sphere.centre).as_unit();
+            let intensity = compute_lighting(&intersection, &normal, &-ray_dir,
+                sphere.specular);
+            let local_colour = colour_mul(intensity, sphere.colour);
+            if recursion == 0 || sphere.reflective <= 0. {
+                return local_colour;
+            }
+            let reflect = reflect_ray(&-ray_dir, &normal);
+            let reflected_colour = trace_ray(&intersection, &reflect, EPSILON, f64::INFINITY,
+                recursion - 1);
+            colour_mix(reflected_colour, local_colour, sphere.reflective)
+        }
+    }
+}
+
+fn closest_intersection(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64) -> Option<(&'static Sphere, f64)> {
     let mut closest_t = f64::INFINITY;
     let mut closest_sphere = None;
     for sphere in &SPHERES {
-        let (t1, t2) = intersect_ray_sphere(camera, ray_dir, sphere);
-        if (t_min..t_max).contains(&t1) && t1 < closest_t {
+        let (t1, t2) = intersect_ray_sphere(origin, ray_dir, sphere);
+        if t1 < closest_t && (t_min..t_max).contains(&t1) {
             closest_t = t1;
             closest_sphere = Some(sphere);
         }
-        if (t_min..t_max).contains(&t2) && t2 < closest_t {
+        if t2 < closest_t && (t_min..t_max).contains(&t2) {
             closest_t = t2;
             closest_sphere = Some(sphere);
         }
     }
     match closest_sphere {
-        None => BGCOLOUR,
-        Some(sphere) => {
-            let intersection = camera + &(closest_t * ray_dir);
-            let normal = &intersection - &sphere.centre;
-            let intensity = compute_lighting(&intersection, &normal.as_unit(), &-ray_dir,
-                sphere.specular);
-            colour_mul(intensity, sphere.colour)
-        }
+        None => None,
+        Some(sphere) => Some((sphere, closest_t)),
     }
 }
 
-fn intersect_ray_sphere(camera: &Vec3, ray_dir: &Vec3, sphere: &Sphere) -> (f64, f64) {
-    let oc = camera - &sphere.centre;
+fn intersect_ray_sphere(origin: &Vec3, ray_dir: &Vec3, sphere: &Sphere) -> (f64, f64) {
+    let oc = origin - &sphere.centre;
     let k1 = ray_dir.dot(ray_dir);
     let k2 = 2. * oc.dot(ray_dir);
     let k3 = oc.dot(&oc) - sphere.radius * sphere.radius;
@@ -191,15 +194,27 @@ fn compute_lighting(point: &Vec3, normal: &Vec3, view: &Vec3, specular: f64) -> 
         intensity += light.intensity * match light.light_type {
             LightType::Ambient => 1.,
             LightType::Point(source) =>
-                directional_light(view, normal, &(&source - point), specular),
+                directional_light(point, normal, view, &(&source - point), 1., specular),
             LightType::Directional(light_dir) =>
-                directional_light(view, normal, &light_dir, specular),
+                directional_light(point, normal, view, &light_dir, f64::INFINITY, specular),
         }
     }
     intensity
 }
 
-fn directional_light(view: &Vec3, normal: &Vec3, light_dir: &Vec3, specular: f64) -> f64 {
+// 'point': surface point (measured from origin)
+// 'view': vector from surface point to camera
+// 'normal': surface normal
+// 'light_dir': vector from surface point in direction of light source
+// 'light_dist': distance of light from surface point, measured in units of 'light_dir'
+// 'specular': specular exponent, or negative if no specular lighting
+fn directional_light(point: &Vec3, normal: &Vec3, view: &Vec3, light_dir: &Vec3, light_dist: f64,
+                     specular: f64) -> f64 {
+    // Shadow check
+    if closest_intersection(point, light_dir, EPSILON, light_dist).is_some() {
+        return 0.;
+    }
+
     let mut intensity = 0.;
 
     // Diffuse lighting
@@ -213,7 +228,7 @@ fn directional_light(view: &Vec3, normal: &Vec3, light_dir: &Vec3, specular: f64
 
     // Specular lighting
     if specular > 0. {
-        let reflect = &(2. * normal.dot(light_dir) * normal) - light_dir;
+        let reflect = reflect_ray(light_dir, normal);
         let b = reflect.dot(view);
         if b > 0. {
             intensity += ((reflect.norm() * view.norm()).recip() * b).powf(specular);
@@ -221,6 +236,36 @@ fn directional_light(view: &Vec3, normal: &Vec3, light_dir: &Vec3, specular: f64
     }
 
     intensity
+}
+
+fn colour_mul(f: f64, c: image::Rgb<u8>) -> image::Rgb<u8> {
+    image::Rgb::<u8>([
+        f64_to_u8(f * (c[0] as f64)),
+        f64_to_u8(f * (c[1] as f64)),
+        f64_to_u8(f * (c[2] as f64)),
+    ])
+}
+
+fn colour_mix(c1: image::Rgb<u8>, c2: image::Rgb<u8>, a: f64) -> image::Rgb<u8> {
+    image::Rgb::<u8>([
+        f64_to_u8(a * (c1[0] as f64) + (1. - a) * (c2[0] as f64)),
+        f64_to_u8(a * (c1[1] as f64) + (1. - a) * (c2[1] as f64)),
+        f64_to_u8(a * (c1[2] as f64) + (1. - a) * (c2[2] as f64)),
+    ])
+}
+
+fn f64_to_u8(f: f64) -> u8 {
+    if f < 0. {
+        0u8
+    } else if f >= 256. {
+        255u8
+    } else {
+        f as u8
+    }
+}
+
+fn reflect_ray(ray: &Vec3, normal: &Vec3) -> Vec3 {
+    &(2. * normal.dot(ray) * normal) - ray
 }
 
 fn canvas_to_viewport(x: u32, y: u32) -> Vec3 {
@@ -236,7 +281,7 @@ fn main() {
     for x in 0..CANVAS_WIDTH {
         for y in 0..CANVAS_HEIGHT {
             let ray_dir = canvas_to_viewport(x, y);
-            let colour = trace_ray(&CAMERA, &ray_dir, 1., f64::INFINITY);
+            let colour = trace_ray(&CAMERA, &ray_dir, 1., f64::INFINITY, REFLECT_RECURSION);
             img.put_pixel(x, CANVAS_HEIGHT - y - 1, colour);
         }
     }

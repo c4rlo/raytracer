@@ -1,4 +1,6 @@
-#[derive(Clone, Copy)]
+// https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
+
+#[derive(Clone, Copy, Default)]
 struct Vec3(f64, f64, f64);
 
 const CANVAS_WIDTH: u32 = 800;
@@ -17,12 +19,12 @@ const REFLECT_RECURSION: u32 = 5;
 
 const EPSILON: f64 = 0.000000001;
 
-const BGCOLOUR: image::Rgb<u8> = image::Rgb([0u8, 0u8, 0u8]);
+const BGCOLOUR: Vec3 = Vec3(0., 0., 0.);
 
 struct Sphere {
     centre: Vec3,
     radius: f64,
-    colour: image::Rgb<u8>,
+    colour: Vec3,
     specular: f64,
     reflective: f64,
     transparent: f64,
@@ -32,7 +34,7 @@ const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(0.1, -1., 3.),
         radius: 1.2,
-        colour: image::Rgb([255u8, 0u8, 0u8]),
+        colour: Vec3(1., 0., 0.),
         specular: 500.,
         reflective: 0.2,
         transparent: 0.5,
@@ -40,7 +42,7 @@ const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(2., 0., 4.),
         radius: 1.,
-        colour: image::Rgb([0u8, 0u8, 255u8]),
+        colour: Vec3(0., 0., 1.),
         specular: 500.,
         reflective: 0.5,
         transparent: 0.,
@@ -48,7 +50,7 @@ const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(-2., 0., 4.),
         radius: 2.,
-        colour: image::Rgb([0u8, 255u8, 0u8]),
+        colour: Vec3(0., 1., 0.),
         specular: 10.,
         reflective: 0.4,
         transparent: 0.,
@@ -56,7 +58,7 @@ const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(0., -5001., 0.),
         radius: 5000.,
-        colour: image::Rgb([255u8, 255u8, 0u8]),
+        colour: Vec3(1., 1., 0.),
         specular: 1000.,
         reflective: 0.1,
         transparent: 0.2,
@@ -64,9 +66,9 @@ const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(2.6, 4.6, 13.),
         radius: 4.,
-        colour: image::Rgb([200u8, 200u8, 255u8]),
-        specular: 0.1,
-        reflective: 0.9,
+        colour: Vec3(0.7, 0.7, 1.),
+        specular: 0.,
+        reflective: 0.7,
         transparent: 0.0,
     },
 ];
@@ -98,44 +100,74 @@ const LIGHTS: [Light; 3] = [
 ];
 
 impl Vec3 {
-    fn dot(&self, other: &Vec3) -> f64 {
+    fn dot(self, other: Vec3) -> f64 {
         self.0 * other.0 + self.1 * other.1 + self.2 * other.2
     }
 
-    fn norm(&self) -> f64 {
+    fn pointwise_mul(self, other: Vec3) -> Vec3 {
+        Vec3(self.0 * other.0, self.1 * other.1, self.2 * other.2)
+    }
+
+    fn norm(self) -> f64 {
         self.dot(self).sqrt()
     }
 
-    fn as_unit(&self) -> Vec3 {
+    fn as_unit(self) -> Vec3 {
         self.norm().recip() * self
+    }
+
+    fn to_rgb_u8(self) -> image::Rgb<u8> {
+        image::Rgb::<u8>([
+            channel_to_rgb_u8(self.0),
+            channel_to_rgb_u8(self.1),
+            channel_to_rgb_u8(self.2),
+        ])
     }
 }
 
-impl std::ops::Add for &Vec3 {
+fn channel_to_rgb_u8(c: f64) -> u8 {
+    if c < 0. {
+        0u8
+    } else if c >= 1. {
+        255u8
+    } else {
+        (c * 256.) as u8
+    }
+}
+
+impl std::ops::Add for Vec3 {
     type Output = Vec3;
 
-    fn add(self, other: &Vec3) -> Vec3 {
+    fn add(self, other: Vec3) -> Vec3 {
         Vec3(self.0 + other.0, self.1 + other.1, self.2 + other.2)
     }
 }
 
-impl std::ops::Sub for &Vec3 {
+impl std::ops::AddAssign for Vec3 {
+    fn add_assign(&mut self, rhs: Vec3) {
+        self.0 += rhs.0;
+        self.1 += rhs.1;
+        self.2 += rhs.2;
+    }
+}
+
+impl std::ops::Sub for Vec3 {
     type Output = Vec3;
 
-    fn sub(self, other: &Vec3) -> Vec3 {
+    fn sub(self, other: Vec3) -> Vec3 {
         Vec3(self.0 - other.0, self.1 - other.1, self.2 - other.2)
     }
 }
 
-impl std::ops::Mul<&Vec3> for f64 {
+impl std::ops::Mul<Vec3> for f64 {
     type Output = Vec3;
 
-    fn mul(self, v: &Vec3) -> Vec3 {
+    fn mul(self, v: Vec3) -> Vec3 {
         Vec3(self * v.0, self * v.1, self * v.2)
     }
 }
 
-impl std::ops::Neg for &Vec3 {
+impl std::ops::Neg for Vec3 {
     type Output = Vec3;
 
     fn neg(self) -> Vec3 {
@@ -144,38 +176,43 @@ impl std::ops::Neg for &Vec3 {
 }
 
 
-fn trace_ray(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64, recursion: u32) -> image::Rgb<u8> {
+// Returns colour (RGB)
+fn trace_ray(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64, recursion: u32) -> Vec3 {
     match closest_intersection(origin, ray_dir, t_min, t_max) {
         None => BGCOLOUR,
         Some((sphere, t)) => {
-            let intersection = origin + &(t * ray_dir);
-            let normal = (&intersection - &sphere.centre).as_unit();
-            let intensity = compute_lighting(&intersection, &normal, &-ray_dir,
-                sphere.specular);
-            let local_colour = colour_mul(intensity, sphere.colour);
+            let intersection = origin + t * ray_dir;
+            let normal = (intersection - sphere.centre).as_unit();
+            let light = compute_lighting(intersection, normal, -ray_dir, sphere.specular);
+            let local_colour = light.pointwise_mul(sphere.colour);
 
             let mut reflect_factor = sphere.reflective;
-            let mut reflect_colour = image::Rgb::<u8>([0u8, 0u8, 0u8]);
+            let mut reflect_colour = Vec3::default();
             if recursion == 0 {
                 reflect_factor = 0.;
             }
             if reflect_factor > 0. {
-                let reflect = reflect_ray(&-ray_dir, &normal);
-                reflect_colour = trace_ray(&intersection, &reflect, EPSILON, f64::INFINITY,
+                let reflect = reflect_ray(-ray_dir, normal);
+                reflect_colour = trace_ray(intersection, reflect, EPSILON, f64::INFINITY,
                     recursion - 1);
             }
 
-            let mut transparent_colour = image::Rgb::<u8>([0u8, 0u8, 0u8]);
+            let mut transparent_colour = Vec3::default();
             if sphere.transparent > 0. {
-                transparent_colour = trace_ray(&intersection, ray_dir, EPSILON, f64::INFINITY, recursion);
+                transparent_colour = trace_ray(intersection, ray_dir, EPSILON, f64::INFINITY,
+                    recursion);
             }
 
-            colour_mix(local_colour, reflect_colour, reflect_factor, transparent_colour, sphere.transparent)
+            let local_factor = 1. - reflect_factor - sphere.transparent;
+            local_factor * local_colour +
+                reflect_factor * reflect_colour +
+                sphere.transparent * transparent_colour
         }
     }
 }
 
-fn closest_intersection(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64) -> Option<(&'static Sphere, f64)> {
+fn closest_intersection(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
+        -> Option<(&'static Sphere, f64)> {
     let mut closest_t = f64::INFINITY;
     let mut closest_sphere = None;
     for sphere in &SPHERES {
@@ -195,11 +232,11 @@ fn closest_intersection(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64) -
     }
 }
 
-fn intersect_ray_sphere(origin: &Vec3, ray_dir: &Vec3, sphere: &Sphere) -> (f64, f64) {
-    let oc = origin - &sphere.centre;
+fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere) -> (f64, f64) {
+    let oc = origin - sphere.centre;
     let k1 = ray_dir.dot(ray_dir);
     let k2 = 2. * oc.dot(ray_dir);
-    let k3 = oc.dot(&oc) - sphere.radius * sphere.radius;
+    let k3 = oc.dot(oc) - sphere.radius * sphere.radius;
 
     let discriminant = k2*k2 - 4.*k1*k3;
 
@@ -212,18 +249,19 @@ fn intersect_ray_sphere(origin: &Vec3, ray_dir: &Vec3, sphere: &Sphere) -> (f64,
     }
 }
 
-fn compute_lighting(point: &Vec3, normal: &Vec3, view: &Vec3, specular: f64) -> f64 {
-    let mut intensity = 0.;
+// Returns: RGB colour
+fn compute_lighting(point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec3 {
+    let mut result = Vec3::default();
     for light in &LIGHTS {
-        intensity += light.intensity * match light.light_type {
-            LightType::Ambient => 1.,
+        result += light.intensity * match light.light_type {
+            LightType::Ambient => Vec3(1., 1., 1.),
             LightType::Point(source) =>
-                directional_light(point, normal, view, &(&source - point), 1., specular),
+                directional_light(point, normal, view, source - point, 1., specular),
             LightType::Directional(light_dir) =>
-                directional_light(point, normal, view, &light_dir, f64::INFINITY, specular),
+                directional_light(point, normal, view, light_dir, f64::INFINITY, specular),
         }
     }
-    intensity
+    result
 }
 
 // 'point': surface point (measured from origin)
@@ -232,11 +270,13 @@ fn compute_lighting(point: &Vec3, normal: &Vec3, view: &Vec3, specular: f64) -> 
 // 'light_dir': vector from surface point in direction of light source
 // 'light_dist': distance of light from surface point, measured in units of 'light_dir'
 // 'specular': specular exponent, or negative if no specular lighting
-fn directional_light(point: &Vec3, normal: &Vec3, view: &Vec3, light_dir: &Vec3, light_dist: f64,
-                     specular: f64) -> f64 {
+// Returns: RGB colour
+fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, light_dist: f64,
+                     specular: f64) -> Vec3 {
     // Shadow check
     if closest_intersection(point, light_dir, EPSILON, light_dist).is_some() {
-        return 0.;
+        // TODO take into account transparency
+        return Vec3::default();
     }
 
     let mut intensity = 0.;
@@ -259,38 +299,11 @@ fn directional_light(point: &Vec3, normal: &Vec3, view: &Vec3, light_dir: &Vec3,
         }
     }
 
-    intensity
+    intensity * Vec3(1., 1., 1.)
 }
 
-fn colour_mul(f: f64, c: image::Rgb<u8>) -> image::Rgb<u8> {
-    image::Rgb::<u8>([
-        f64_to_u8(f * (c[0] as f64)),
-        f64_to_u8(f * (c[1] as f64)),
-        f64_to_u8(f * (c[2] as f64)),
-    ])
-}
-
-fn colour_mix(c0: image::Rgb<u8>, c1: image::Rgb<u8>, f1: f64, c2: image::Rgb<u8>, f2: f64) -> image::Rgb<u8> {
-    let f0 = 1. - f1 - f2;
-    image::Rgb::<u8>([
-        f64_to_u8(f0 * (c0[0] as f64) + f1 * (c1[0] as f64) + f2 * (c2[0] as f64)),
-        f64_to_u8(f0 * (c0[1] as f64) + f1 * (c1[1] as f64) + f2 * (c2[1] as f64)),
-        f64_to_u8(f0 * (c0[2] as f64) + f1 * (c1[2] as f64) + f2 * (c2[2] as f64)),
-    ])
-}
-
-fn f64_to_u8(f: f64) -> u8 {
-    if f < 0. {
-        0u8
-    } else if f >= 256. {
-        255u8
-    } else {
-        f as u8
-    }
-}
-
-fn reflect_ray(ray: &Vec3, normal: &Vec3) -> Vec3 {
-    &(2. * normal.dot(ray) * normal) - ray
+fn reflect_ray(ray: Vec3, normal: Vec3) -> Vec3 {
+    2. * normal.dot(ray) * normal - ray
 }
 
 fn canvas_to_viewport(x: u32, y: u32) -> Vec3 {
@@ -306,8 +319,8 @@ fn main() {
     for x in 0..CANVAS_WIDTH {
         for y in 0..CANVAS_HEIGHT {
             let ray_dir = canvas_to_viewport(x, y);
-            let colour = trace_ray(&CAMERA, &ray_dir, 1., f64::INFINITY, REFLECT_RECURSION);
-            img.put_pixel(x, CANVAS_HEIGHT - y - 1, colour);
+            let colour = trace_ray(CAMERA, ray_dir, 1., f64::INFINITY, REFLECT_RECURSION);
+            img.put_pixel(x, CANVAS_HEIGHT - y - 1, colour.to_rgb_u8());
         }
     }
     img.save("img.png").unwrap()

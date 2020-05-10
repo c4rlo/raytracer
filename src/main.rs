@@ -1,6 +1,102 @@
 #[derive(Clone, Copy)]
 struct Vec3(f64, f64, f64);
 
+const CANVAS_WIDTH: u32 = 800;
+const CANVAS_HEIGHT: u32 = 950;
+
+const CANVAS_WIDTH_F64: f64 = CANVAS_WIDTH as f64;
+const CANVAS_HEIGHT_F64: f64 = CANVAS_HEIGHT as f64;
+
+const CAMERA: Vec3 = Vec3(0., 0., 0.);
+
+const VIEWPORT_WIDTH: f64 = 1.;
+const VIEWPORT_HEIGHT: f64 = CANVAS_HEIGHT_F64 * VIEWPORT_WIDTH / CANVAS_WIDTH_F64;
+const VIEWPORT_DISTANCE: f64 = 1.;
+
+const REFLECT_RECURSION: u32 = 5;
+
+const EPSILON: f64 = 0.000000001;
+
+const BGCOLOUR: image::Rgb<u8> = image::Rgb([0u8, 0u8, 0u8]);
+
+struct Sphere {
+    centre: Vec3,
+    radius: f64,
+    colour: image::Rgb<u8>,
+    specular: f64,
+    reflective: f64,
+    transparent: f64,
+}
+
+const SPHERES: [Sphere; 5] = [
+    Sphere{
+        centre: Vec3(0.1, -1., 3.),
+        radius: 1.2,
+        colour: image::Rgb([255u8, 0u8, 0u8]),
+        specular: 500.,
+        reflective: 0.2,
+        transparent: 0.5,
+    },
+    Sphere{
+        centre: Vec3(2., 0., 4.),
+        radius: 1.,
+        colour: image::Rgb([0u8, 0u8, 255u8]),
+        specular: 500.,
+        reflective: 0.5,
+        transparent: 0.,
+    },
+    Sphere{
+        centre: Vec3(-2., 0., 4.),
+        radius: 2.,
+        colour: image::Rgb([0u8, 255u8, 0u8]),
+        specular: 10.,
+        reflective: 0.4,
+        transparent: 0.,
+    },
+    Sphere{
+        centre: Vec3(0., -5001., 0.),
+        radius: 5000.,
+        colour: image::Rgb([255u8, 255u8, 0u8]),
+        specular: 1000.,
+        reflective: 0.1,
+        transparent: 0.2,
+    },
+    Sphere{
+        centre: Vec3(2.6, 4.6, 13.),
+        radius: 4.,
+        colour: image::Rgb([200u8, 200u8, 255u8]),
+        specular: 0.1,
+        reflective: 0.9,
+        transparent: 0.0,
+    },
+];
+
+enum LightType {
+    Ambient,
+    Directional(Vec3),
+    Point(Vec3),
+}
+
+struct Light {
+    intensity: f64,
+    light_type: LightType,
+}
+
+const LIGHTS: [Light; 3] = [
+    Light{
+        intensity: 0.2,
+        light_type: LightType::Ambient,
+    },
+    Light{
+        intensity: 0.6,
+        light_type: LightType::Point(Vec3(2., 1., 0.)),
+    },
+    Light{
+        intensity: 0.2,
+        light_type: LightType::Directional(Vec3(1., 4., 4.)),
+    },
+];
+
 impl Vec3 {
     fn dot(&self, other: &Vec3) -> f64 {
         self.0 * other.0 + self.1 * other.1 + self.2 * other.2
@@ -47,89 +143,6 @@ impl std::ops::Neg for &Vec3 {
     }
 }
 
-const CANVAS_WIDTH: u32 = 800;
-const CANVAS_HEIGHT: u32 = 950;
-
-const CANVAS_WIDTH_F64: f64 = CANVAS_WIDTH as f64;
-const CANVAS_HEIGHT_F64: f64 = CANVAS_HEIGHT as f64;
-
-const CAMERA: Vec3 = Vec3(0., 0., 0.);
-
-const VIEWPORT_WIDTH: f64 = 1.;
-const VIEWPORT_HEIGHT: f64 = CANVAS_HEIGHT_F64 * VIEWPORT_WIDTH / CANVAS_WIDTH_F64;
-const VIEWPORT_DISTANCE: f64 = 1.;
-
-const REFLECT_RECURSION: u32 = 5;
-
-const EPSILON: f64 = 0.000000001;
-
-const BGCOLOUR: image::Rgb<u8> = image::Rgb([0u8, 0u8, 0u8]);
-// const BGCOLOUR: image::Rgb<u8> = image::Rgb([255u8, 255u8, 255u8]);
-
-struct Sphere {
-    centre: Vec3,
-    radius: f64,
-    colour: image::Rgb<u8>,
-    specular: f64,
-    reflective: f64,
-}
-
-const SPHERES: [Sphere; 4] = [
-    Sphere{
-        centre: Vec3(0., -1., 3.),
-        radius: 1.,
-        colour: image::Rgb([255u8, 0u8, 0u8]),
-        specular: 500.,
-        reflective: 0.2,
-    },
-    Sphere{
-        centre: Vec3(2., 0., 4.),
-        radius: 1.,
-        colour: image::Rgb([0u8, 0u8, 255u8]),
-        specular: 500.,
-        reflective: 0.3,
-    },
-    Sphere{
-        centre: Vec3(-2., 0., 4.),
-        radius: 1.,
-        colour: image::Rgb([0u8, 255u8, 0u8]),
-        specular: 10.,
-        reflective: 0.4,
-    },
-    Sphere{
-        centre: Vec3(0., -5001., 0.),
-        radius: 5000.,
-        colour: image::Rgb([255u8, 255u8, 0u8]),
-        specular: 1000.,
-        reflective: 0.5,
-    },
-];
-
-enum LightType {
-    Ambient,
-    Directional(Vec3),
-    Point(Vec3),
-}
-
-struct Light {
-    intensity: f64,
-    light_type: LightType,
-}
-
-const LIGHTS: [Light; 3] = [
-    Light{
-        intensity: 0.2,
-        light_type: LightType::Ambient,
-    },
-    Light{
-        intensity: 0.6,
-        light_type: LightType::Point(Vec3(2., 1., 0.)),
-    },
-    Light{
-        intensity: 0.2,
-        light_type: LightType::Directional(Vec3(1., 4., 4.)),
-    },
-];
 
 fn trace_ray(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64, recursion: u32) -> image::Rgb<u8> {
     match closest_intersection(origin, ray_dir, t_min, t_max) {
@@ -140,13 +153,24 @@ fn trace_ray(origin: &Vec3, ray_dir: &Vec3, t_min: f64, t_max: f64, recursion: u
             let intensity = compute_lighting(&intersection, &normal, &-ray_dir,
                 sphere.specular);
             let local_colour = colour_mul(intensity, sphere.colour);
-            if recursion == 0 || sphere.reflective <= 0. {
-                return local_colour;
+
+            let mut reflect_factor = sphere.reflective;
+            let mut reflect_colour = image::Rgb::<u8>([0u8, 0u8, 0u8]);
+            if recursion == 0 {
+                reflect_factor = 0.;
             }
-            let reflect = reflect_ray(&-ray_dir, &normal);
-            let reflected_colour = trace_ray(&intersection, &reflect, EPSILON, f64::INFINITY,
-                recursion - 1);
-            colour_mix(reflected_colour, local_colour, sphere.reflective)
+            if reflect_factor > 0. {
+                let reflect = reflect_ray(&-ray_dir, &normal);
+                reflect_colour = trace_ray(&intersection, &reflect, EPSILON, f64::INFINITY,
+                    recursion - 1);
+            }
+
+            let mut transparent_colour = image::Rgb::<u8>([0u8, 0u8, 0u8]);
+            if sphere.transparent > 0. {
+                transparent_colour = trace_ray(&intersection, ray_dir, EPSILON, f64::INFINITY, recursion);
+            }
+
+            colour_mix(local_colour, reflect_colour, reflect_factor, transparent_colour, sphere.transparent)
         }
     }
 }
@@ -246,11 +270,12 @@ fn colour_mul(f: f64, c: image::Rgb<u8>) -> image::Rgb<u8> {
     ])
 }
 
-fn colour_mix(c1: image::Rgb<u8>, c2: image::Rgb<u8>, a: f64) -> image::Rgb<u8> {
+fn colour_mix(c0: image::Rgb<u8>, c1: image::Rgb<u8>, f1: f64, c2: image::Rgb<u8>, f2: f64) -> image::Rgb<u8> {
+    let f0 = 1. - f1 - f2;
     image::Rgb::<u8>([
-        f64_to_u8(a * (c1[0] as f64) + (1. - a) * (c2[0] as f64)),
-        f64_to_u8(a * (c1[1] as f64) + (1. - a) * (c2[1] as f64)),
-        f64_to_u8(a * (c1[2] as f64) + (1. - a) * (c2[2] as f64)),
+        f64_to_u8(f0 * (c0[0] as f64) + f1 * (c1[0] as f64) + f2 * (c2[0] as f64)),
+        f64_to_u8(f0 * (c0[1] as f64) + f1 * (c1[1] as f64) + f2 * (c2[1] as f64)),
+        f64_to_u8(f0 * (c0[2] as f64) + f1 * (c1[2] as f64) + f2 * (c2[2] as f64)),
     ])
 }
 

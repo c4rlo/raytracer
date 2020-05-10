@@ -1,11 +1,29 @@
 // https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
 
+// TODO (approx priority order):
+// - Read scene from file
+// - Optimization: use all CPU cores
+// - Custom camera position
+// - Refractions
+// - Depth of field
+// - Constructive Solid Geometry (Boolean shapes)
+// - Profile to find bottlenecks + optimize
+// - Other shapes, e.g. triangles
+// - Textures, perhaps programmatically generated, e.g. checkerboard
+// - Maybe fractals as textures?!
+// - Ability to render standard 3D image formats
+// - Stereo vision
+
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, PartialEq, Default)]
 struct Vec3(f64, f64, f64);
 
-const CANVAS_WIDTH: u32 = 800;
+impl Vec3 {
+    const ZERO: Vec3 = Vec3(0., 0., 0.);
+}
+
+const CANVAS_WIDTH: u32 = 810;
 const CANVAS_HEIGHT: u32 = 950;
 
 const CANVAS_WIDTH_F64: f64 = CANVAS_WIDTH as f64;
@@ -25,7 +43,7 @@ const BGCOLOUR: Vec3 = Vec3(0., 0., 0.);
 
 struct Sphere {
     centre: Vec3,
-    radius: f64,
+    radius_sq: f64,
     colour: Vec3,
     specular: f64,
     reflective: f64,
@@ -35,7 +53,7 @@ struct Sphere {
 const SPHERES: [Sphere; 5] = [
     Sphere{
         centre: Vec3(0.1, -1., 3.),
-        radius: 1.2,
+        radius_sq: 1.44,
         colour: Vec3(1., 0., 0.),
         specular: 500.,
         reflective: 0.2,
@@ -43,7 +61,7 @@ const SPHERES: [Sphere; 5] = [
     },
     Sphere{
         centre: Vec3(2., 0., 4.),
-        radius: 1.,
+        radius_sq: 1.,
         colour: Vec3(0., 0., 1.),
         specular: 500.,
         reflective: 0.5,
@@ -51,7 +69,7 @@ const SPHERES: [Sphere; 5] = [
     },
     Sphere{
         centre: Vec3(-2., 0., 4.),
-        radius: 2.,
+        radius_sq: 4.,
         colour: Vec3(0., 1., 0.),
         specular: 10.,
         reflective: 0.4,
@@ -59,7 +77,7 @@ const SPHERES: [Sphere; 5] = [
     },
     Sphere{
         centre: Vec3(0., -5001., 0.),
-        radius: 5000.,
+        radius_sq: 25000000.,
         colour: Vec3(1., 1., 0.),
         specular: 1000.,
         reflective: 0.1,
@@ -67,7 +85,7 @@ const SPHERES: [Sphere; 5] = [
     },
     Sphere{
         centre: Vec3(2.6, 4.6, 13.),
-        radius: 4.,
+        radius_sq: 16.,
         colour: Vec3(0.7, 0.7, 1.),
         specular: 0.,
         reflective: 0.7,
@@ -236,6 +254,7 @@ struct SpheresIterator {
     t_range: std::ops::Range<f64>,
 
     // State
+    k1: f64,
     sphere_index: isize,
     ts: VecDeque<f64>,
 }
@@ -250,7 +269,7 @@ impl Iterator for SpheresIterator {
                 return None;
             }
             let (t1, t2) = intersect_ray_sphere(self.ray_origin, self.ray_dir,
-                &SPHERES[self.sphere_index as usize]);
+                &SPHERES[self.sphere_index as usize], self.k1);
             if self.t_range.contains(&t1) {
                 self.ts.push_back(t1);
             }
@@ -268,16 +287,18 @@ fn intersected_spheres(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
         ray_origin: origin,
         ray_dir: ray_dir,
         t_range: t_min..t_max,
+        k1: ray_dir.dot(ray_dir),
         sphere_index: -1,
         ts: VecDeque::new(),
     }
 }
 
-fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere) -> (f64, f64) {
+fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere, k1: f64) -> (f64, f64) {
     let oc = origin - sphere.centre;
-    let k1 = ray_dir.dot(ray_dir);
+    // let k1 = ray_dir.dot(ray_dir);  <- we get this from our caller - optimization
     let k2 = 2. * oc.dot(ray_dir);
-    let k3 = oc.dot(oc) - sphere.radius * sphere.radius;
+    // let k3 = oc.dot(oc) - sphere.radius * sphere.radius;
+    let k3 = oc.dot(oc) - sphere.radius_sq;
 
     let discriminant = k2*k2 - 4.*k1*k3;
 
@@ -292,7 +313,7 @@ fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere) -> (f64, f
 
 // Returns: RGB colour
 fn compute_lighting(point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec3 {
-    let mut result = Vec3::default();
+    let mut result = Vec3::ZERO;
     for light in &LIGHTS {
         result += light.intensity * match light.light_type {
             LightType::Ambient => Vec3(1., 1., 1.),
@@ -314,8 +335,6 @@ fn compute_lighting(point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec
 // Returns: RGB colour
 fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, light_dist: f64,
                      specular: f64) -> Vec3 {
-    let base = ray_colour(point, light_dir, EPSILON, light_dist);
-
     let mut intensity = 0.;
 
     // Diffuse lighting
@@ -336,7 +355,11 @@ fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, lig
         }
     }
 
-    intensity * base
+    if intensity == 0. {
+        return Vec3::ZERO;
+    }
+
+    intensity * ray_colour(point, light_dir, EPSILON, light_dist)
 }
 
 // Returns: RGB colour
@@ -344,7 +367,16 @@ fn ray_colour(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
     let mut colour = Vec3(1., 1., 1.);
     for (sphere, _) in intersected_spheres(origin, ray_dir, t_min, t_max) {
         colour = colour.pointwise_mul(sphere.transparent * sphere.colour);
+
+        // Or if we don't care about the colour, we could do:
         // colour = sphere.transparent * colour
+
+        // Or if we want shadows un-influenced by transparency, we could do:
+        // return Vec3::ZERO;
+
+        if colour == Vec3::ZERO {
+            break;
+        }
     }
     colour
 }

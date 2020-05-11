@@ -14,8 +14,6 @@
 // - Ability to render standard 3D image formats
 // - Stereo vision
 
-use std::collections::VecDeque;
-
 #[derive(Clone, Copy, PartialEq, Default)]
 struct Vec3(f64, f64, f64);
 
@@ -256,28 +254,39 @@ struct SpheresIterator {
     // State
     k1: f64,
     sphere_index: isize,
-    ts: VecDeque<f64>,
+    t: Option<f64>,
+}
+
+impl SpheresIterator {
+    fn curr_item(&self, t: f64) -> Option<(&'static Sphere, f64)> {
+        Some((self.curr_sphere(), t))
+    }
+
+    fn curr_sphere(&self) -> &'static Sphere {
+        &SPHERES[self.sphere_index as usize]
+    }
 }
 
 impl Iterator for SpheresIterator {
     type Item = (&'static Sphere, f64);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.ts.is_empty() {
+        while self.t.is_none() {
             self.sphere_index += 1;
             if self.sphere_index as usize >= SPHERES.len() {
                 return None;
             }
-            let (t1, t2) = intersect_ray_sphere(self.ray_origin, self.ray_dir,
-                &SPHERES[self.sphere_index as usize], self.k1);
+            let (t1, t2) = intersect_ray_sphere(self.ray_origin, self.ray_dir, self.curr_sphere(),
+                self.k1);
             if self.t_range.contains(&t1) {
-                self.ts.push_back(t1);
+                self.t = Some(t1);
             }
             if self.t_range.contains(&t2) {
-                self.ts.push_back(t2);
+                return self.curr_item(t2);
             }
         }
-        Some((&SPHERES[self.sphere_index as usize], self.ts.pop_front().unwrap()))
+        let t = self.t.take().unwrap();
+        self.curr_item(t)
     }
 }
 
@@ -289,7 +298,7 @@ fn intersected_spheres(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
         t_range: t_min..t_max,
         k1: ray_dir.dot(ray_dir),
         sphere_index: -1,
-        ts: VecDeque::new(),
+        t: None
     }
 }
 
@@ -359,11 +368,11 @@ fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, lig
         return Vec3::ZERO;
     }
 
-    intensity * ray_colour(point, light_dir, EPSILON, light_dist)
+    intensity * shadow(point, light_dir, EPSILON, light_dist)
 }
 
 // Returns: RGB colour
-fn ray_colour(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
+fn shadow(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
     let mut colour = Vec3(1., 1., 1.);
     for (sphere, _) in intersected_spheres(origin, ray_dir, t_min, t_max) {
         colour = colour.pointwise_mul(sphere.transparent * sphere.colour);
@@ -378,6 +387,11 @@ fn ray_colour(origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
             break;
         }
     }
+
+    // Note: we taken into account the _transparency_ of the spheres along the ray; really what's
+    // missing is their _reflectivity_. However, this seems much harder to do (the route between
+    // the origin and the light source is no longer a simple ray).
+
     colour
 }
 

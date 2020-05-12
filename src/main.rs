@@ -143,9 +143,15 @@ impl std::ops::Neg for Vec3 {
     }
 }
 
-
 // Returns colour (RGB)
-fn trace_ray(scene: &Scene, origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64, recursion: u32) -> Vec3 {
+fn trace_ray(
+    scene: &Scene,
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_min: f64,
+    t_max: f64,
+    recursion: u32,
+) -> Vec3 {
     match closest_intersection(&scene.spheres, origin, ray_dir, t_min, t_max) {
         None => scene.bgcolour,
         Some((sphere, t)) => {
@@ -161,26 +167,43 @@ fn trace_ray(scene: &Scene, origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64,
             }
             if reflect_factor > 0. {
                 let reflect = reflect_ray(-ray_dir, normal);
-                reflect_colour = trace_ray(scene, intersection, reflect, EPSILON, f64::INFINITY,
-                    recursion - 1);
+                reflect_colour = trace_ray(
+                    scene,
+                    intersection,
+                    reflect,
+                    EPSILON,
+                    f64::INFINITY,
+                    recursion - 1,
+                );
             }
 
             let mut transparent_colour = Vec3::default();
             if sphere.transparent > 0. {
-                transparent_colour = trace_ray(scene, intersection, ray_dir, EPSILON, f64::INFINITY,
-                    recursion);
+                transparent_colour = trace_ray(
+                    scene,
+                    intersection,
+                    ray_dir,
+                    EPSILON,
+                    f64::INFINITY,
+                    recursion,
+                );
             }
 
             let local_factor = 1. - reflect_factor - sphere.transparent;
-            local_factor * local_colour +
-                reflect_factor * reflect_colour +
-                sphere.transparent * transparent_colour
+            local_factor * local_colour
+                + reflect_factor * reflect_colour
+                + sphere.transparent * transparent_colour
         }
     }
 }
 
-fn closest_intersection(spheres: &[Sphere], origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
-        -> Option<(&Sphere, f64)> {
+fn closest_intersection(
+    spheres: &[Sphere],
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_min: f64,
+    t_max: f64,
+) -> Option<(&Sphere, f64)> {
     let mut closest_t = f64::INFINITY;
     let mut closest_sphere = None;
     for (sphere, t) in intersected_spheres(spheres, origin, ray_dir, t_min, t_max) {
@@ -227,8 +250,8 @@ impl<'a> Iterator for SpheresIterator<'a> {
             if self.sphere_index as usize >= self.spheres.len() {
                 return None;
             }
-            let (t1, t2) = intersect_ray_sphere(self.ray_origin, self.ray_dir, self.curr_sphere(),
-                self.k1);
+            let (t1, t2) =
+                intersect_ray_sphere(self.ray_origin, self.ray_dir, self.curr_sphere(), self.k1);
             if self.t_range.contains(&t1) {
                 self.t = Some(t1);
             }
@@ -241,16 +264,21 @@ impl<'a> Iterator for SpheresIterator<'a> {
     }
 }
 
-fn intersected_spheres<'a>(spheres: &'a [Sphere], origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64)
-        -> impl Iterator<Item=(&'a Sphere, f64)> {
-    SpheresIterator{
+fn intersected_spheres<'a>(
+    spheres: &'a [Sphere],
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_min: f64,
+    t_max: f64,
+) -> impl Iterator<Item = (&'a Sphere, f64)> {
+    SpheresIterator {
         spheres: spheres,
         ray_origin: origin,
         ray_dir: ray_dir,
         t_range: t_min..t_max,
         k1: ray_dir.dot(ray_dir),
         sphere_index: -1,
-        t: None
+        t: None,
     }
 }
 
@@ -261,7 +289,7 @@ fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere, k1: f64) -
     // let k3 = oc.dot(oc) - sphere.radius * sphere.radius;
     let k3 = oc.dot(oc) - sphere.radius_sq;
 
-    let discriminant = k2*k2 - 4.*k1*k3;
+    let discriminant = k2 * k2 - 4. * k1 * k3;
 
     if discriminant < 0. {
         (f64::INFINITY, f64::INFINITY)
@@ -273,32 +301,45 @@ fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere, k1: f64) -
 }
 
 // Returns: RGB colour
-fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec3
-{
+fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec3 {
     let mut result = Vec3::ZERO;
     for light in &scene.lights {
-        result += light.intensity * match light.light_type {
+        let colour = match light.light_type {
             LightType::Ambient => Vec3(1., 1., 1.),
-            LightType::Point(source) =>
-                directional_light(point, normal, view, source - point, 1., specular,
-                    &scene.spheres),
-            LightType::Directional(light_dir) =>
-                directional_light(point, normal, view, light_dir, f64::INFINITY, specular,
-                    &scene.spheres),
-        }
+            LightType::Point(source) => directional_light(
+                point,
+                normal,
+                view,
+                source - point,
+                1.,
+                specular,
+                &scene.spheres,
+            ),
+            LightType::Directional(light_dir) => directional_light(
+                point,
+                normal,
+                view,
+                light_dir,
+                f64::INFINITY,
+                specular,
+                &scene.spheres,
+            ),
+        };
+        result += light.intensity * colour;
     }
     result
 }
 
-// 'point': surface point (measured from origin)
-// 'view': vector from surface point to camera
-// 'normal': surface normal
-// 'light_dir': vector from surface point in direction of light source
-// 'light_dist': distance of light from surface point, measured in units of 'light_dir'
-// 'specular': specular exponent, or negative if no specular lighting
-// 'spheres': spheres in the scene (for shadow calculation)
 // Returns: RGB colour
-fn directional_light(point: Vec3, normal: Vec3, view: Vec3, light_dir: Vec3, light_dist: f64, specular: f64, spheres: &[Sphere]) -> Vec3 {
+fn directional_light(
+    point: Vec3,        // surface point (measured from origin)
+    normal: Vec3,       // surface normal
+    view: Vec3,         // vector from surface point to camera
+    light_dir: Vec3,    // vector from surface point in direction of light source
+    light_dist: f64,    // distance of light from surface point, measured in units of 'light_dir'
+    specular: f64,      // specular exponent, or negative if no specular lighting
+    spheres: &[Sphere], // spheres in the scene (for shadow calculation)
+) -> Vec3 {
     let mut intensity = 0.;
 
     // Diffuse lighting
@@ -358,21 +399,35 @@ fn canvas_to_viewport(x: u32, y: u32) -> Vec3 {
     Vec3(
         (x as f64 - CANVAS_WIDTH_F64 / 2.) / CANVAS_WIDTH_F64 * VIEWPORT_WIDTH,
         (y as f64 - CANVAS_HEIGHT_F64 / 2.) / CANVAS_HEIGHT_F64 * VIEWPORT_HEIGHT,
-        VIEWPORT_DISTANCE
+        VIEWPORT_DISTANCE,
     )
 }
 
 fn parse_scene(description: &[u8]) -> Scene {
     let v: serde_hjson::Value = serde_hjson::from_slice(description).unwrap();
-    Scene{
+    Scene {
         bgcolour: parse_colour(v.find("bgcolour").unwrap()),
-        spheres: v.find("spheres").unwrap().as_array().unwrap().iter().map(parse_sphere).collect(),
-        lights: v.find("lights").unwrap().as_array().unwrap().iter().map(parse_light).collect(),
+        spheres: v
+            .find("spheres")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(parse_sphere)
+            .collect(),
+        lights: v
+            .find("lights")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(parse_light)
+            .collect(),
     }
 }
 
 fn parse_sphere(v: &serde_hjson::Value) -> Sphere {
-    Sphere{
+    Sphere {
         centre: parse_vec3(v.find("centre").unwrap()),
         radius_sq: v.find("radius").unwrap().as_f64().unwrap().powi(2),
         colour: parse_colour(v.find("colour").unwrap()),
@@ -383,7 +438,7 @@ fn parse_sphere(v: &serde_hjson::Value) -> Sphere {
 }
 
 fn parse_light(v: &serde_hjson::Value) -> Light {
-    Light{
+    Light {
         intensity: v.find("intensity").unwrap().as_f64().unwrap(),
         light_type: parse_light_type(v),
     }
@@ -434,7 +489,14 @@ fn main() {
     for x in 0..CANVAS_WIDTH {
         for y in 0..CANVAS_HEIGHT {
             let ray_dir = canvas_to_viewport(x, y);
-            let colour = trace_ray(&scene, CAMERA, ray_dir, 1., f64::INFINITY, REFLECT_RECURSION);
+            let colour = trace_ray(
+                &scene,
+                CAMERA,
+                ray_dir,
+                1.,
+                f64::INFINITY,
+                REFLECT_RECURSION,
+            );
             img.put_pixel(x, CANVAS_HEIGHT - y - 1, colour.to_rgb_u8());
         }
     }

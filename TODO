@@ -1,0 +1,13 @@
+- Reconsider how to do shadows
+- Custom camera position and orientation, field-of-view, image dimensions
+- Refractions
+- Depth of field
+- Haze/fog
+- Constructive Solid Geometry (Boolean shapes)
+- Optimizations: precompute more things
+- Profile to find bottlenecks + optimize
+- Other shapes, e.g. triangles, cylinders
+- Textures, perhaps programmatically generated, e.g. checkerboard
+- Maybe fractals as textures
+- Maybe 3D fractals (Mandelbulb etc.)
+- Stereo vision

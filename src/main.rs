@@ -1,18 +1,5 @@
 // https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
 
-// TODO (approx priority order):
-// - Optimization: precompute more things
-// - Custom camera position
-// - Refractions
-// - Depth of field
-// - Constructive Solid Geometry (Boolean shapes)
-// - Profile to find bottlenecks + optimize
-// - Other shapes, e.g. triangles
-// - Textures, perhaps programmatically generated, e.g. checkerboard
-// - Maybe fractals as textures?!
-// - Ability to render standard 3D image formats
-// - Stereo vision
-
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]

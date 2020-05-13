@@ -1,7 +1,6 @@
 // https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
 
 // TODO (approx priority order):
-// - Optimization: use all CPU cores
 // - Optimization: precompute more things
 // - Custom camera position
 // - Refractions
@@ -13,6 +12,8 @@
 // - Maybe fractals as textures?!
 // - Ability to render standard 3D image formats
 // - Stereo vision
+
+use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 struct Vec3(f64, f64, f64);
@@ -286,7 +287,6 @@ fn intersect_ray_sphere(origin: Vec3, ray_dir: Vec3, sphere: &Sphere, k1: f64) -
     let oc = origin - sphere.centre;
     // let k1 = ray_dir.dot(ray_dir);  <- we get this from our caller - optimization
     let k2 = 2. * oc.dot(ray_dir);
-    // let k3 = oc.dot(oc) - sphere.radius * sphere.radius;
     let k3 = oc.dot(oc) - sphere.radius_sq;
 
     let discriminant = k2 * k2 - 4. * k1 * k3;
@@ -479,26 +479,43 @@ fn parse_colour_channel(s: &str) -> f64 {
     u8::from_str_radix(&s, 16).unwrap() as f64 / 255.
 }
 
+fn raytrace_row(scene: &Scene, y: u32) -> Vec<image::Rgb<u8>> {
+    let mut row = Vec::with_capacity(CANVAS_WIDTH as usize);
+    for x in 0..CANVAS_WIDTH {
+        let ray_dir = canvas_to_viewport(x, y);
+        let colour = trace_ray(
+            &scene,
+            CAMERA,
+            ray_dir,
+            1.,
+            f64::INFINITY,
+            REFLECT_RECURSION,
+        );
+        row.push(colour.to_rgb_u8());
+    }
+    row
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let in_file = args.next().unwrap();
     let out_file = args.next().unwrap();
     let scene = parse_scene(&std::fs::read(in_file).unwrap());
 
+    let mut rows = Vec::with_capacity(CANVAS_HEIGHT as usize);
+
+    (0..CANVAS_HEIGHT)
+        .into_par_iter()
+        .map(|y| raytrace_row(&scene, y))
+        .collect_into_vec(&mut rows);
+
     let mut img = image::RgbImage::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    for x in 0..CANVAS_WIDTH {
-        for y in 0..CANVAS_HEIGHT {
-            let ray_dir = canvas_to_viewport(x, y);
-            let colour = trace_ray(
-                &scene,
-                CAMERA,
-                ray_dir,
-                1.,
-                f64::INFINITY,
-                REFLECT_RECURSION,
-            );
-            img.put_pixel(x, CANVAS_HEIGHT - y - 1, colour.to_rgb_u8());
+
+    for (y, row) in rows.iter().enumerate() {
+        for (x, pixel) in row.iter().enumerate() {
+            img.put_pixel(x as u32, CANVAS_HEIGHT - (y as u32) - 1, *pixel);
         }
     }
-    img.save(out_file).unwrap()
+
+    img.save(out_file).unwrap();
 }

@@ -1,5 +1,3 @@
-// https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html
-
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]

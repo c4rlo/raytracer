@@ -1,10 +1,11 @@
-- Reconsider how to do shadows
-- Custom camera position and orientation, field-of-view, image dimensions
-- Refractions
-- Depth of field
-- Haze/fog
 - Constructive Solid Geometry (Boolean shapes)
+- Depth of field
+- Linear transformations of objects
+- Custom camera position and orientation, field-of-view, image dimensions
+- Haze/fog
 - Optimizations: precompute more things
+- More advanced specular lighting, e.g. Cook-Torrance
+- Super-sampling
 - Profile to find bottlenecks + optimize
 - Other shapes, e.g. triangles, cylinders
 - Textures, perhaps programmatically generated, e.g. checkerboard

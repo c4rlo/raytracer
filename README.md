@@ -2,7 +2,7 @@
 
 Just for fun: a simple raytracer, written by following the excellent
 [tutorial](https://www.gabrielgambetta.com/computer-graphics-from-scratch/raytracing.html)
-by Gabriel Gambetta.
+by Gabriel Gambetta, with some extensions.
 
 ![](scene.png)
 
@@ -15,4 +15,5 @@ by Gabriel Gambetta.
 - Shadows
 - Transparency
 - Reflections
-- Parallel execution: use all CPU cores
+- Refractions
+- Multithreading

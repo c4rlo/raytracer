@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -5,6 +7,7 @@ struct Vec3(f64, f64, f64);
 
 impl Vec3 {
     const ZERO: Vec3 = Vec3(0., 0., 0.);
+    const ONES: Vec3 = Vec3(1., 1., 1.);
 }
 
 const CANVAS_WIDTH: u32 = 810;
@@ -27,7 +30,8 @@ const EPSILON: f64 = 0.00000000001;
 struct Sphere {
     centre: Vec3,
     radius_sq: f64,
-    colour: Vec3,
+    colour_ext: Vec3,
+    colour_int: Vec3,
     specular: f64,
     reflective: f64,
     refractive: f64,
@@ -60,16 +64,20 @@ impl Vec3 {
         self.0 * other.0 + self.1 * other.1 + self.2 * other.2
     }
 
-    fn pointwise_mul(self, other: Vec3) -> Vec3 {
-        Vec3(self.0 * other.0, self.1 * other.1, self.2 * other.2)
-    }
-
     fn norm(self) -> f64 {
         self.dot(self).sqrt()
     }
 
     fn as_unit(self) -> Vec3 {
         self.norm().recip() * self
+    }
+
+    fn powf(self, e: f64) -> Vec3 {
+        Vec3(self.0.powf(e), self.1.powf(e), self.2.powf(e))
+    }
+
+    fn pointwise_mul(self, other: Vec3) -> Vec3 {
+        Vec3(self.0 * other.0, self.1 * other.1, self.2 * other.2)
     }
 
     fn to_rgb_u8(self) -> image::Rgb<u8> {
@@ -138,7 +146,6 @@ impl std::ops::Neg for Vec3 {
 }
 
 impl Sphere {
-
     fn intersect_ray(&self, origin: Vec3, ray_dir: Vec3, k1: f64) -> (f64, f64) {
         let oc = origin - self.centre;
         let k2 = 2. * oc.dot(ray_dir);
@@ -159,77 +166,6 @@ impl Sphere {
     //     let a = *point - self.centre;
     //     a.dot(a) <= self.radius_sq
     // }
-
-}
-
-// Returns colour (RGB)
-fn trace_ray<'a>(
-    scene: &'a Scene,
-    origin: Vec3,
-    ray_dir: Vec3,
-    t_min: f64,
-    t_max: f64,
-    in_spheres: &SphereSet<'a>,
-    recursion: u32,
-) -> Vec3 {
-    stats::record_ray();
-    match closest_intersection(&scene.spheres, origin, ray_dir, t_min, t_max) {
-        None => scene.bgcolour,
-        Some((sphere, action, t)) => {
-            let intersection = origin + t * ray_dir;
-            let mut normal = (intersection - sphere.centre).as_unit();
-            if let RayAction::Exit = action {
-                normal = -normal;
-            }
-
-            let local_light = compute_lighting(&scene, intersection, normal, -ray_dir, sphere.specular);
-            let mut colour = (1. - sphere.transparent - sphere.reflective) * local_light.pointwise_mul(sphere.colour);
-
-            if recursion == 0 {
-                return colour;
-            }
-
-            if sphere.transparent > 0. {
-                let mut in_spheres_new = in_spheres.clone();
-                match action {
-                    RayAction::Enter => {
-                        in_spheres_new.add(sphere);
-                    },
-                    RayAction::Exit => {
-                        in_spheres_new.remove(sphere);
-                    },
-                    _ => {}
-                }
-                if let Some(refracted_ray) = refract_ray(ray_dir, normal, in_spheres.top_priority_sphere(), in_spheres_new.top_priority_sphere()) {
-                    stats::record_refract_ray();
-                    colour += sphere.transparent * trace_ray(
-                        scene,
-                        intersection,
-                        refracted_ray,
-                        EPSILON,
-                        f64::INFINITY,
-                        &in_spheres_new,
-                        recursion - 1,
-                    );
-                }
-            }
-
-            if sphere.reflective > 0. {
-                stats::record_reflect_ray();
-                colour += sphere.reflective * trace_ray(
-                    scene,
-                    intersection,
-                    reflect_ray(-ray_dir, normal),
-                    EPSILON,
-                    f64::INFINITY,
-                    in_spheres,
-                    recursion - 1,
-                );
-            }
-
-            colour
-        }
-    }
 }
 
 enum RayAction {
@@ -238,23 +174,12 @@ enum RayAction {
     Touch,
 }
 
-fn closest_intersection(
-    spheres: &[Sphere],
-    origin: Vec3,
-    ray_dir: Vec3,
-    t_min: f64,
-    t_max: f64,
-) -> Option<(&Sphere, RayAction, f64)> {
-    intersected_spheres(spheres, origin, ray_dir, t_min, t_max)
-        .min_by(|x1, x2| x1.2.partial_cmp(&x2.2).unwrap())
-}
-
 struct SpheresIterator<'a> {
     // Inputs
     spheres: &'a [Sphere],
     ray_origin: Vec3,
     ray_dir: Vec3,
-    t_range: std::ops::Range<f64>,
+    t_range: Range<f64>,
 
     // State
     k1: f64,
@@ -277,8 +202,9 @@ impl<'a> Iterator for SpheresIterator<'a> {
             if self.sphere_index as usize >= self.spheres.len() {
                 return None;
             }
-            let (t1, t2) =
-                self.curr_sphere().intersect_ray(self.ray_origin, self.ray_dir, self.k1);
+            let (t1, t2) = self
+                .curr_sphere()
+                .intersect_ray(self.ray_origin, self.ray_dir, self.k1);
             debug_assert!(!t1.is_nan());
             debug_assert!(!t2.is_nan());
             let (a1, a2) = match t1.partial_cmp(&t2).unwrap() {
@@ -302,8 +228,7 @@ fn intersected_spheres<'a>(
     spheres: &'a [Sphere],
     origin: Vec3,
     ray_dir: Vec3,
-    t_min: f64,
-    t_max: f64,
+    t_range: Range<f64>,
 ) -> impl Iterator<Item = (&'a Sphere, RayAction, f64)> {
     origin.assert_ok();
     ray_dir.assert_ok();
@@ -311,11 +236,21 @@ fn intersected_spheres<'a>(
         spheres: spheres,
         ray_origin: origin,
         ray_dir: ray_dir,
-        t_range: t_min..t_max,
+        t_range: t_range,
         k1: ray_dir.dot(ray_dir),
         sphere_index: -1,
         backlog: None,
     }
+}
+
+fn closest_intersection(
+    spheres: &[Sphere],
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_range: Range<f64>,
+) -> Option<(&Sphere, RayAction, f64)> {
+    intersected_spheres(spheres, origin, ray_dir, t_range)
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
 }
 
 #[derive(Clone, Debug)]
@@ -334,7 +269,12 @@ impl<'a> SphereSet<'a> {
         // debug_assert!(self.spheres.iter().find(|&&s| std::ptr::eq(s, sphere)).is_none(),
         //     "spheres={:?} sphere={:?}", self.spheres, sphere);
         #[cfg(debug_assertions)]
-        if self.spheres.iter().find(|&&s| std::ptr::eq(s, sphere)).is_some() {
+        if self
+            .spheres
+            .iter()
+            .find(|&&s| std::ptr::eq(s, sphere))
+            .is_some()
+        {
             stats::record_double_add();
         }
         self.spheres.push(sphere);
@@ -352,13 +292,108 @@ impl<'a> SphereSet<'a> {
         // panic!("{:?} not in list of {} spheres", sphere, self.spheres.len());
     }
 
+    fn adjust(&mut self, action: RayAction, sphere: &'a Sphere) {
+        match action {
+            RayAction::Enter => {
+                self.add(sphere);
+            }
+            RayAction::Exit => {
+                self.remove(sphere);
+            }
+            _ => {}
+        }
+    }
+
+    fn adjusted(&self, action: RayAction, sphere: &'a Sphere) -> Self {
+        let mut copy = self.clone();
+        copy.adjust(action, sphere);
+        copy
+    }
+
     fn top_priority_sphere(&self) -> Option<&'a Sphere> {
-        self.spheres.iter().min_by_key(|sphere| sphere.priority).map(|&s| s)
+        self.spheres
+            .iter()
+            .min_by_key(|sphere| sphere.priority)
+            .map(|&s| s)
+    }
+}
+
+// Returns colour (RGB)
+fn trace_ray<'a>(
+    scene: &'a Scene,
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_range: Range<f64>,
+    in_spheres: &SphereSet<'a>,
+    recursion: u32,
+) -> Vec3 {
+    stats::record_ray();
+    match closest_intersection(&scene.spheres, origin, ray_dir, t_range) {
+        None => scene.bgcolour,
+        Some((sphere, action, t)) => {
+            let intersection = origin + t * ray_dir;
+            let mut normal = (intersection - sphere.centre).as_unit();
+            if let RayAction::Exit = action {
+                normal = -normal;
+            }
+
+            let local_light =
+                compute_lighting(&scene, intersection, normal, -ray_dir, sphere, in_spheres);
+            let mut colour = (1. - sphere.transparent - sphere.reflective)
+                * local_light.pointwise_mul(sphere.colour_ext);
+
+            let old_top_sphere = in_spheres.top_priority_sphere();
+
+            if recursion > 0 {
+                if sphere.transparent > 0. {
+                    let in_spheres_new = in_spheres.adjusted(action, sphere);
+                    if let Some(refracted_ray) = refract_ray(
+                        ray_dir,
+                        normal,
+                        old_top_sphere,
+                        in_spheres_new.top_priority_sphere(),
+                    ) {
+                        stats::record_refract_ray();
+                        colour += sphere.transparent
+                            * trace_ray(
+                                scene,
+                                intersection,
+                                refracted_ray,
+                                EPSILON..f64::INFINITY,
+                                &in_spheres_new,
+                                recursion - 1,
+                            );
+                    }
+                }
+
+                if sphere.reflective > 0. {
+                    stats::record_reflect_ray();
+                    colour += sphere.reflective
+                        * trace_ray(
+                            scene,
+                            intersection,
+                            reflect_ray(-ray_dir, normal),
+                            EPSILON..f64::INFINITY,
+                            in_spheres,
+                            recursion - 1,
+                        );
+                }
+            }
+
+            pass_colour_thru_sphere(colour, old_top_sphere, t * ray_dir.norm())
+        }
     }
 }
 
 // Returns: RGB colour
-fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specular: f64) -> Vec3 {
+fn compute_lighting<'a>(
+    scene: &'a Scene,
+    point: Vec3,
+    normal: Vec3,
+    view: Vec3,
+    sphere: &'a Sphere,
+    in_spheres: &SphereSet<'a>,
+) -> Vec3 {
     let mut result = Vec3::ZERO;
     for light in &scene.lights {
         let colour = match light.light_type {
@@ -369,8 +404,9 @@ fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specul
                 view,
                 source - point,
                 1.,
-                specular,
+                sphere,
                 &scene.spheres,
+                in_spheres,
             ),
             LightType::Directional(light_dir) => directional_light(
                 point,
@@ -378,8 +414,9 @@ fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specul
                 view,
                 light_dir,
                 f64::INFINITY,
-                specular,
+                sphere,
                 &scene.spheres,
+                in_spheres,
             ),
         };
         result += light.intensity * colour;
@@ -388,14 +425,15 @@ fn compute_lighting(scene: &Scene, point: Vec3, normal: Vec3, view: Vec3, specul
 }
 
 // Returns: RGB colour
-fn directional_light(
+fn directional_light<'a>(
     point: Vec3,        // surface point (measured from origin)
     normal: Vec3,       // surface normal
     view: Vec3,         // vector from surface point to camera/origin
     light_dir: Vec3,    // vector from surface point in direction of light source
     light_dist: f64,    // distance of light from surface point, measured in units of 'light_dir'
-    specular: f64,      // specular exponent, or negative if no specular lighting
-    spheres: &[Sphere], // spheres in the scene (for shadow calculation)
+    sphere: &'a Sphere,      // sphere on whose surface the point lies
+    spheres: &'a [Sphere], // all spheres in the scene (for shadow calculation)
+    in_spheres: &SphereSet<'a>,  // spheres containing the surface point (excl sphere itself)
 ) -> Vec3 {
     let mut intensity = 0.;
 
@@ -409,11 +447,11 @@ fn directional_light(
     }
 
     // Specular lighting
-    if specular > 0. {
+    if sphere.specular > 0. {
         let reflect = reflect_ray(light_dir, normal);
         let b = reflect.dot(view);
         if b > 0. {
-            intensity += ((reflect.norm() * view.norm()).recip() * b).powf(specular);
+            intensity += ((reflect.norm() * view.norm()).recip() * b).powf(sphere.specular);
         }
     }
 
@@ -421,34 +459,64 @@ fn directional_light(
         return Vec3::ZERO;
     }
 
-    intensity * shadow(spheres, point, light_dir, EPSILON, light_dist)
+    let mut in_spheres_new = in_spheres.clone();
+    if light_dir.dot(normal) < 0. {
+        in_spheres_new.add(sphere);
+    }
+
+    intensity * shadow(spheres, point, light_dir, EPSILON..light_dist, in_spheres_new)
 }
 
 // Returns: RGB colour
-fn shadow(spheres: &[Sphere], origin: Vec3, ray_dir: Vec3, t_min: f64, t_max: f64) -> Vec3 {
-    let mut colour = Vec3(1., 1., 1.);
-    for (sphere, _, _) in intersected_spheres(spheres, origin, ray_dir, t_min, t_max) {
-        colour = colour.pointwise_mul(sphere.transparent * sphere.colour);
+// Note: we taken into account the _transparency_ of the spheres along the ray; really what's
+// missing is their _reflectivity_. However, this seems much harder to do (the route between
+// the origin and the light source is no longer a simple ray).
+fn shadow<'a>(
+    spheres: &'a [Sphere],
+    origin: Vec3,
+    ray_dir: Vec3,
+    t_range: Range<f64>,
+    mut in_spheres: SphereSet<'a>,
+) -> Vec3 {
 
-        // Or if we don't care about the colour, we could do:
-        // colour = sphere.transparent * colour
+    // All-or-nothing shadows: crap alternative solution.
+    // if closest_intersection(spheres, origin, ray_dir, t_range).is_some() {
+    //     Vec3::ZERO
+    // } else {
+    //     Vec3::ONES
+    // }
 
-        // Or if we want shadows un-influenced by transparency, we could do:
-        // return Vec3::ZERO;
+    let ray_norm = ray_dir.norm();
+
+    let adjust_colour = |c: Vec3, sphere: Option<&Sphere>, delta_t: f64| -> Vec3 {
+        pass_colour_thru_sphere(c, sphere, delta_t * ray_norm)
+    };
+
+    let mut intersections: Vec<_> = intersected_spheres(spheres, origin, ray_dir, t_range.clone())
+        .collect();
+    intersections.sort_unstable_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+
+    let mut colour = Vec3::ONES;
+    let mut t_prev = t_range.start;
+    for (sphere, action, t) in intersections {
+        colour = adjust_colour(colour, in_spheres.top_priority_sphere(), t - t_prev);
+        in_spheres.adjust(action, sphere);
+        t_prev = t;
 
         if colour == Vec3::ZERO {
-            break;
+            return colour;
         }
     }
 
-    // Note: we taken into account the _transparency_ of the spheres along the ray; really what's
-    // missing is their _reflectivity_. However, this seems much harder to do (the route between
-    // the origin and the light source is no longer a simple ray).
-
-    colour
+    adjust_colour(colour, in_spheres.top_priority_sphere(), t_range.end - t_prev)
 }
 
-fn refract_ray(ray: Vec3, normal: Vec3, from_sphere: Option<&Sphere>, to_sphere: Option<&Sphere>) -> Option<Vec3> {
+fn refract_ray(
+    ray: Vec3,
+    normal: Vec3,
+    from_sphere: Option<&Sphere>,
+    to_sphere: Option<&Sphere>,
+) -> Option<Vec3> {
     let c1 = from_sphere.map_or(1., |s| s.refractive);
     let c2 = to_sphere.map_or(1., |s| s.refractive);
     if c1 == 1. && c2 == 1. {
@@ -457,11 +525,11 @@ fn refract_ray(ray: Vec3, normal: Vec3, from_sphere: Option<&Sphere>, to_sphere:
     let ri = c2 / c1;
     let ray = ray.as_unit();
     let d = -ray.dot(normal);
-    let k = 1. - ri*ri*(1. - d*d);
+    let k = 1. - ri * ri * (1. - d * d);
     if k < 0. {
         None
     } else {
-        let result = ri*ray + (ri*d - k.sqrt())*normal;
+        let result = ri * ray + (ri * d - k.sqrt()) * normal;
         // if ri == 1. {
         //     debug_assert!((result - ray).norm() < EPSILON, "ray={:?} result={:?} normal={:?} d={} k={}", ray, result, normal, d, k);
         // }
@@ -472,6 +540,14 @@ fn refract_ray(ray: Vec3, normal: Vec3, from_sphere: Option<&Sphere>, to_sphere:
 
 fn reflect_ray(ray: Vec3, normal: Vec3) -> Vec3 {
     2. * normal.dot(ray) * normal - ray
+}
+
+fn pass_colour_thru_sphere(colour: Vec3, sphere: Option<&Sphere>, ray_len: f64) -> Vec3 {
+    if let Some(s) = sphere {
+        colour.pointwise_mul((s.transparent * s.colour_int).powf(ray_len))
+    } else {
+        colour
+    }
 }
 
 fn canvas_to_viewport(x: u32, y: u32) -> Vec3 {
@@ -510,29 +586,38 @@ mod stats {
 
     pub fn record_ray() {
         #[cfg(debug_assertions)]
-        unsafe { STATS.num_rays += 1; }
+        unsafe {
+            STATS.num_rays += 1;
+        }
     }
 
     pub fn record_refract_ray() {
         #[cfg(debug_assertions)]
-        unsafe { STATS.num_refract_rays += 1; }
+        unsafe {
+            STATS.num_refract_rays += 1;
+        }
     }
 
     pub fn record_reflect_ray() {
         #[cfg(debug_assertions)]
-        unsafe { STATS.num_reflect_rays += 1; }
+        unsafe {
+            STATS.num_reflect_rays += 1;
+        }
     }
 
     #[cfg(debug_assertions)]
     pub fn record_double_add() {
-        unsafe { STATS.num_double_adds += 1; }
+        unsafe {
+            STATS.num_double_adds += 1;
+        }
     }
 
     pub fn record_double_remove() {
         #[cfg(debug_assertions)]
-        unsafe { STATS.num_double_removes += 1; }
+        unsafe {
+            STATS.num_double_removes += 1;
+        }
     }
-
 }
 
 fn parse_scene(description: &[u8]) -> Scene {
@@ -562,7 +647,8 @@ fn parse_sphere(v: &serde_hjson::Value) -> Sphere {
     Sphere {
         centre: parse_vec3(v.find("centre").unwrap()),
         radius_sq: v.find("radius").unwrap().as_f64().unwrap().powi(2),
-        colour: parse_colour(v.find("colour").unwrap()),
+        colour_ext: parse_colour(v.find("colour_ext").unwrap()),
+        colour_int: parse_opt_colour(v.find("colour_int"), Vec3::ONES),
         specular: parse_opt_f64(v.find("specular"), 0.),
         reflective: parse_opt_f64(v.find("reflective"), 0.),
         refractive: parse_opt_f64(v.find("refractive"), 1.),
@@ -604,6 +690,10 @@ fn parse_opt_u32(vo: Option<&serde_hjson::Value>, default: u32) -> u32 {
     vo.map_or(default, |v| v.as_u64().unwrap() as u32)
 }
 
+fn parse_opt_colour(vo: Option<&serde_hjson::Value>, default: Vec3) -> Vec3 {
+    vo.map_or(default, |v| parse_colour(v))
+}
+
 fn parse_colour(v: &serde_hjson::Value) -> Vec3 {
     let s = v.as_str().unwrap();
     Vec3(
@@ -625,8 +715,7 @@ fn raytrace_row<'a>(scene: &'a Scene, y: u32) -> Vec<image::Rgb<u8>> {
             &scene,
             CAMERA,
             ray_dir,
-            1.,
-            f64::INFINITY,
+            (1.)..f64::INFINITY,
             &SphereSet::new(),
             MAX_RECURSION,
         );

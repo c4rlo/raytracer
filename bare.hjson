@@ -1,0 +1,22 @@
+{
+    bgcolour: "000000"
+
+    spheres: [
+        {
+            centre: [ 0, 0, 3 ]
+            radius: 1
+            colour_ext: "ffc0c0"
+            specular: 500
+            transparent: 0.5
+            priority: 10
+        },
+    ]
+
+    lights: [
+        {
+            type: directional
+            intensity: 2,
+            dir: [ 1, 4, 2 ]
+        },
+    ]
+}

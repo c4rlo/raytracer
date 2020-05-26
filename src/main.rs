@@ -10,6 +10,8 @@ impl Vec3 {
     const ONES: Vec3 = Vec3(1., 1., 1.);
 }
 
+// const CANVAS_WIDTH: u32 = 300;
+// const CANVAS_HEIGHT: u32 = 300;
 const CANVAS_WIDTH: u32 = 810;
 const CANVAS_HEIGHT: u32 = 950;
 
@@ -24,7 +26,7 @@ const VIEWPORT_DISTANCE: f64 = 1.;
 
 const MAX_RECURSION: u32 = 5;
 
-const EPSILON: f64 = 0.00000000001;
+const EPSILON: f64 = 1e-7;
 
 #[derive(Debug)]
 struct Sphere {
@@ -168,6 +170,7 @@ impl Sphere {
     // }
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum RayAction {
     Enter,
     Exit,
@@ -266,16 +269,15 @@ impl<'a> SphereSet<'a> {
     }
 
     fn add(&mut self, sphere: &'a Sphere) {
-        // debug_assert!(self.spheres.iter().find(|&&s| std::ptr::eq(s, sphere)).is_none(),
-        //     "spheres={:?} sphere={:?}", self.spheres, sphere);
-        #[cfg(debug_assertions)]
         if self
             .spheres
             .iter()
             .find(|&&s| std::ptr::eq(s, sphere))
             .is_some()
         {
+            // debug_assert!(false, "spheres={:?} sphere={:?}", self.spheres, sphere);
             stats::record_double_add();
+            return;
         }
         self.spheres.push(sphere);
     }
@@ -283,13 +285,13 @@ impl<'a> SphereSet<'a> {
     fn remove(&mut self, sphere: &'a Sphere) {
         for (i, &s) in self.spheres.iter().enumerate() {
             if std::ptr::eq(s, sphere) {
-                debug_assert!(std::ptr::eq(self.spheres[i], sphere));
+                // debug_assert!(std::ptr::eq(self.spheres[i], sphere));
                 self.spheres.remove(i);
                 return;
             }
         }
         stats::record_double_remove();
-        // panic!("{:?} not in list of {} spheres", sphere, self.spheres.len());
+        // debug_assert!(false, "{:?} not in list of {} spheres", sphere, self.spheres.len());
     }
 
     fn adjust(&mut self, action: RayAction, sphere: &'a Sphere) {
@@ -325,7 +327,7 @@ fn trace_ray<'a>(
     ray_dir: Vec3,
     t_range: Range<f64>,
     in_spheres: &SphereSet<'a>,
-    recursion: u32,
+    max_recursion: u32,
 ) -> Vec3 {
     stats::record_ray();
     match closest_intersection(&scene.spheres, origin, ray_dir, t_range) {
@@ -333,18 +335,18 @@ fn trace_ray<'a>(
         Some((sphere, action, t)) => {
             let intersection = origin + t * ray_dir;
             let mut normal = (intersection - sphere.centre).as_unit();
-            if let RayAction::Exit = action {
+            if action == RayAction::Exit {
                 normal = -normal;
             }
 
-            let local_light =
-                compute_lighting(&scene, intersection, normal, -ray_dir, sphere, in_spheres);
+            let local_light = compute_lighting(&scene, intersection, normal, -ray_dir, action,
+                sphere, in_spheres);
             let mut colour = (1. - sphere.transparent - sphere.reflective)
                 * local_light.pointwise_mul(sphere.colour_ext);
 
             let old_top_sphere = in_spheres.top_priority_sphere();
 
-            if recursion > 0 {
+            if max_recursion > 0 {
                 if sphere.transparent > 0. {
                     let in_spheres_new = in_spheres.adjusted(action, sphere);
                     if let Some(refracted_ray) = refract_ray(
@@ -361,7 +363,7 @@ fn trace_ray<'a>(
                                 refracted_ray,
                                 EPSILON..f64::INFINITY,
                                 &in_spheres_new,
-                                recursion - 1,
+                                max_recursion - 1,
                             );
                     }
                 }
@@ -375,7 +377,7 @@ fn trace_ray<'a>(
                             reflect_ray(-ray_dir, normal),
                             EPSILON..f64::INFINITY,
                             in_spheres,
-                            recursion - 1,
+                            max_recursion - 1,
                         );
                 }
             }
@@ -391,6 +393,7 @@ fn compute_lighting<'a>(
     point: Vec3,
     normal: Vec3,
     view: Vec3,
+    action: RayAction,
     sphere: &'a Sphere,
     in_spheres: &SphereSet<'a>,
 ) -> Vec3 {
@@ -404,6 +407,7 @@ fn compute_lighting<'a>(
                 view,
                 source - point,
                 1.,
+                action,
                 sphere,
                 &scene.spheres,
                 in_spheres,
@@ -414,6 +418,7 @@ fn compute_lighting<'a>(
                 view,
                 light_dir,
                 f64::INFINITY,
+                action,
                 sphere,
                 &scene.spheres,
                 in_spheres,
@@ -431,6 +436,7 @@ fn directional_light<'a>(
     view: Vec3,         // vector from surface point to camera/origin
     light_dir: Vec3,    // vector from surface point in direction of light source
     light_dist: f64,    // distance of light from surface point, measured in units of 'light_dir'
+    action: RayAction,       // interaction of current ray with sphere
     sphere: &'a Sphere,      // sphere on whose surface the point lies
     spheres: &'a [Sphere], // all spheres in the scene (for shadow calculation)
     in_spheres: &SphereSet<'a>,  // spheres containing the surface point (excl sphere itself)
@@ -461,7 +467,12 @@ fn directional_light<'a>(
 
     let mut in_spheres_new = in_spheres.clone();
     if light_dir.dot(normal) < 0. {
-        in_spheres_new.add(sphere);
+        // hack -- not really needed
+        // let mut action = action;
+        // if action == RayAction::Touch {
+        //     action = RayAction::Enter;
+        // }
+        in_spheres_new.adjust(action, sphere);
     }
 
     intensity * shadow(spheres, point, light_dir, EPSILON..light_dist, in_spheres_new)
@@ -605,8 +616,8 @@ mod stats {
         }
     }
 
-    #[cfg(debug_assertions)]
     pub fn record_double_add() {
+        #[cfg(debug_assertions)]
         unsafe {
             STATS.num_double_adds += 1;
         }
